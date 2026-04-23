@@ -1,33 +1,28 @@
 #!/usr/bin/env python3
 """
-股票行业分类与热点领域更新脚本
+Stock Industry Classification Update Script
 
-功能：
-1. 从 akshare 获取最新 A股/港股 股票列表
-2. 通过网络搜索获取缺失股票的分类信息
-3. 更新 output/companies.csv
+Fetches stock data from akshare and maintains industry classification
+in output/companies.csv.
 
-使用方法:
-    python update_industry_class.py              # 完整更新
-    python update_industry_class.py --stock 688411  # 更新单只股票
-    python update_industry_class.py --missing       # 仅更新未分类的股票
+Usage:
+    python update_industry_class.py --fetch          # Fetch latest stock list from akshare
+    python update_industry_class.py --missing       # Update stocks without classification
+    python update_industry_class.py --stock 688411  # Update single stock
+    python update_industry_class.py --all            # Update all stocks (requires network)
 """
 
 import argparse
 import csv
-import json
 import os
-import subprocess
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 
-# ==================== 行业分类规则 ====================
+# ==================== Industry Classification Rules ====================
 
-# 行业大类关键词映射
 LARGE_KEYWORDS = {
     "农业": ["农业", "种植", "养殖", "畜牧", "渔", "林业", "种子"],
     "采掘": ["采掘", "石油", "煤炭", "天然气", "矿山", "矿产"],
@@ -59,7 +54,6 @@ LARGE_KEYWORDS = {
     "医药生物": ["医药", "生物", "中药", "西药"],
 }
 
-# 行业小类关键词映射
 SMALL_KEYWORDS = {
     "银行": ["银行"],
     "证券": ["证券"],
@@ -87,7 +81,6 @@ SMALL_KEYWORDS = {
     "专业连锁": ["专业连锁", "零售"],
 }
 
-# 热点领域列表
 HOT_TOPICS = [
     "人工智能", "AI", "机器学习", "深度学习",
     "新能源", "光伏", "风电", "储能", "氢能", "锂电池",
@@ -99,50 +92,49 @@ HOT_TOPICS = [
     "军工", "国防", "航空航天",
     "碳中和", "环保", "节能减排", "数字经济",
     "产业互联网", "工业4.0", "元宇宙", "虚拟现实", "VR", "AR",
-    "医疗器械", "创新药", "ADC", "生物制药",
 ]
 
 
-# ==================== 核心分类函数 ====================
+# ==================== Classification Functions ====================
 
 def classify_by_keywords(business_desc: str) -> tuple:
     """
-    基于关键词的行业分类
+    Classify stock based on business description keywords.
 
     Returns:
-        (行业大类, 行业小类, 热点领域)
+        (industry_large, industry_small, hot_fields)
     """
     text = business_desc.lower() if business_desc else ""
-
-    industry_large = "制造业"  # 默认
+    industry_large = "制造业"
     industry_small = "通用机械"
     hot_fields = []
 
-    # 电子/芯片/半导体
+    # Electronics/Semiconductors
     if any(k in text for k in ["芯片", "半导体", "集成电路", "晶圆", "微电子"]):
         industry_large = "电子"
         industry_small = "电子元件"
         hot_fields = ["芯片", "半导体"]
+
     elif any(k in text for k in ["光刻", "封测", "功率", "mosfet", "igbt", "fpga"]):
         industry_large = "电子"
         industry_small = "电子元件"
         hot_fields = ["芯片", "半导体"]
 
-    # 通信/5G/物联网
+    # Communications/5G/IoT
     elif any(k in text for k in ["通信", "5g", "6g", "无线", "物联网", "射频", "光通信"]):
         industry_large = "信息传输、软件和信息技术服务业"
         industry_small = "通信设备"
         hot_fields = ["5G", "物联网"]
 
-    # 软件/IT
-    elif any(k in text for k in ["软件", "开发", "操作系统", "数据库", "信息化", "SAAS"]):
+    # Software/IT
+    elif any(k in text for k in ["软件", "开发", "操作系统", "数据库", "信息化", "saas"]):
         industry_large = "信息传输、软件和信息技术服务业"
         industry_small = "软件开发"
         hot_fields = ["软件"]
         if "人工智能" in text or "ai" in text:
             hot_fields.append("人工智能")
 
-    # 医药生物
+    # Biotech/Pharma
     elif any(k in text for k in ["医药", "制药", "药业", "生物", "疫苗", "抗体", "基因"]):
         industry_large = "医药生物"
         if "中药" in text:
@@ -155,57 +147,61 @@ def classify_by_keywords(business_desc: str) -> tuple:
             industry_small = "西药"
             hot_fields = ["医药"]
 
-    # 医疗器械
     elif any(k in text for k in ["医疗", "器械", "诊断", "检测", "影像", "手术"]):
         industry_large = "医药生物"
         industry_small = "医疗器械"
         hot_fields = ["医疗器械"]
 
-    # 新能源/光伏/储能
+    # New Energy/Solar/Storage
     elif any(k in text for k in ["光伏", "太阳能", "组件", "逆变器"]):
         industry_large = "制造业"
         industry_small = "专用设备"
         hot_fields = ["新能源", "光伏"]
+
     elif any(k in text for k in ["储能", "电池", "锂电池", "动力电池"]):
         industry_large = "制造业"
         industry_small = "电子设备"
         hot_fields = ["新能源", "储能"]
+
     elif any(k in text for k in ["风电", "风力", "风机"]):
         industry_large = "制造业"
         industry_small = "专用设备"
         hot_fields = ["新能源", "风电"]
 
-    # 金融
+    # Finance
     elif any(k in text for k in ["银行", "储蓄", "信贷"]):
         industry_large = "金融保险"
         industry_small = "银行"
         hot_fields = ["金融", "银行"]
+
     elif any(k in text for k in ["证券", "经纪", "承销"]):
         industry_large = "金融保险"
         industry_small = "证券"
         hot_fields = ["金融", "证券"]
 
-    # 食品饮料
+    # Food/Beverage
     elif any(k in text for k in ["酒", "白酒", "啤酒", "葡萄酒"]):
         industry_large = "食品饮料"
         industry_small = "饮料制造"
         hot_fields = ["白酒"]
+
     elif any(k in text for k in ["食品", "预制菜", "肉制品", "调味品"]):
         industry_large = "食品饮料"
         industry_small = "食品制造"
         hot_fields = ["食品"]
 
-    # 化工/新材料
+    # Chemical/New Materials
     elif any(k in text for k in ["化工", "化学", "塑料", "橡胶", "涂料"]):
         industry_large = "石化塑胶"
         industry_small = "化学制品"
         hot_fields = ["化工"] if "新材料" not in text else ["新材料"]
+
     elif any(k in text for k in ["新材料", "纳米", "碳纤维", "复合材料", "合金"]):
         industry_large = "制造业"
         industry_small = "金属制品"
         hot_fields = ["新材料"]
 
-    # 军工
+    # Military/Aerospace
     elif any(k in text for k in ["军工", "国防", "航空航天", "军品", "导弹"]):
         industry_large = "制造业"
         industry_small = "专用设备"
@@ -216,91 +212,45 @@ def classify_by_keywords(business_desc: str) -> tuple:
 
 def search_company_info(symbol: str, name: str) -> dict:
     """
-    通过网络搜索获取公司信息
+    Search company information via network (Agent Browser).
 
-    使用 DuckDuckGo 搜索获取公司主营业务描述
+    This is a STUB - implementation pending agent-browser integration.
 
     Args:
-        symbol: 股票代码
-        name: 公司名称
+        symbol: Stock code
+        name: Company name
 
     Returns:
         dict with keys: business_desc, industry_large, industry_small, hot_fields
     """
-    result = {
+    # TODO: Implement with agent-browser
+    # Expected implementation:
+    # 1. Use browser agent to search for "{name} {symbol} 主营业务"
+    # 2. Extract business description from search results
+    # 3. Classify based on extracted information
+
+    return {
         "business_desc": "",
         "industry_large": "",
         "industry_small": "",
         "hot_fields": "",
     }
 
-    # 构建搜索关键词
-    queries = [
-        f"{name} {symbol} 主营业务",
-        f"{name} 公司简介",
-        f"{name} 核心业务",
-    ]
 
-    for query in queries:
-        try:
-            # 使用 ddg 命令行工具搜索 (如果可用)
-            # 或者使用 curl 直接调用 DuckDuckGo HTML
-            cmd = f'ddg "{query}" 2>/dev/null | head -20'
-            try:
-                proc = subprocess.run(
-                    cmd, shell=True, capture_output=True, text=True, timeout=10
-                )
-                if proc.stdout.strip():
-                    result["business_desc"] = proc.stdout.strip()
-                    break
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                # ddg 命令不可用，尝试 curl
-                pass
-
-        except Exception as e:
-            print(f"  搜索出错: {e}")
-            continue
-
-    # 如果获取到业务描述，进行分类
-    if result["business_desc"]:
-        industry_large, industry_small, hot_fields = classify_by_keywords(
-            result["business_desc"]
-        )
-        result["industry_large"] = industry_large
-        result["industry_small"] = industry_small
-        result["hot_fields"] = hot_fields
-
-    return result
-
-
-def update_single_stock(symbol: str, name: str, market: str = "A股") -> dict:
+def classify_by_name(name: str) -> tuple:
     """
-    更新单只股票的行业分类信息
+    Simple classification based only on stock name (fallback).
 
     Returns:
-        dict with updated fields
+        (industry_large, industry_small, hot_fields)
     """
-    print(f"\n处理: {symbol} {name}")
+    return classify_by_keywords(name)
 
-    # 尝试通过网络搜索获取信息
-    info = search_company_info(symbol, name)
 
-    if info["business_desc"]:
-        print(f"  业务描述: {info['business_desc'][:60]}...")
-        print(f"  分类: {info['industry_large']} / {info['industry_small']} / {info['hot_fields']}")
-    else:
-        # 基于股票名称进行简单分类
-        print(f"  未获取到网络信息，基于名称分类")
-        industry_large, industry_small, hot_fields = classify_by_keywords(name)
-        info["industry_large"] = industry_large
-        info["industry_small"] = industry_small
-        info["hot_fields"] = hot_fields
-
-    return info
-
+# ==================== Data Loading/Saving ====================
 
 def load_companies_csv(filepath: str) -> list:
-    """加载 companies.csv"""
+    """Load companies.csv into list of dicts."""
     companies = []
     with open(filepath, "r", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
@@ -310,101 +260,177 @@ def load_companies_csv(filepath: str) -> list:
 
 
 def save_companies_csv(filepath: str, companies: list, fieldnames: list):
-    """保存 companies.csv"""
+    """Save companies list to CSV."""
     with open(filepath, "w", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
         writer.writeheader()
         writer.writerows(companies)
 
 
-def get_stock_list_from_akshare() -> pd.DataFrame:
-    """
-    从 akshare 获取 A股股票列表
+# ==================== Akshare Data Fetching ====================
 
-    Returns:
-        DataFrame with columns: 股票代码, 股票名称, 市场
-    """
+def fetch_a_stocks() -> pd.DataFrame:
+    """Fetch A-share stock list from akshare."""
     try:
         import akshare as ak
-
-        print("从 akshare 获取 A股股票列表...")
-        stock_list = ak.stock_info_a_code_name()
-        stock_list = stock_list.rename(
-            columns={"symbol": "股票代码", "name": "股票名称"}
-        )
-        stock_list["市场"] = "A股"
-        print(f"  获取到 {len(stock_list)} 只 A股")
-
-        return stock_list[["股票代码", "股票名称", "市场"]]
+        print("Fetching A-share stocks from akshare...")
+        df = ak.stock_info_a_code_name()
+        df = df.rename(columns={"symbol": "股票代码", "name": "股票名称"})
+        df["市场"] = "A股"
+        print(f"  Fetched {len(df)} A-share stocks")
+        return df[["股票代码", "股票名称", "市场"]]
     except ImportError:
-        print("akshare 未安装，跳过股票列表更新")
+        print("  akshare not installed, skipping A-share fetch")
         return pd.DataFrame()
 
 
+def fetch_hk_stocks() -> pd.DataFrame:
+    """Fetch HK stocks from akshare."""
+    try:
+        import akshare as ak
+        print("Fetching HK stocks from akshare...")
+        df = ak.stock_hk_spot_em()
+        df = df.rename(columns={"代码": "股票代码", "中文名称": "股票名称"})
+        df["市场"] = "港股"
+        print(f"  Fetched {len(df)} HK stocks")
+        return df[["股票代码", "股票名称", "市场"]]
+    except ImportError:
+        print("  akshare not installed or failed, skipping HK fetch")
+        return pd.DataFrame()
+
+
+def fetch_index_components() -> pd.DataFrame:
+    """Fetch index constituent stocks from akshare."""
+    try:
+        import akshare as ak
+        indices = {
+            "上证50": "000016",
+            "沪深300": "000300",
+            "深证成指": "399001",
+            "创业板指": "399006",
+        }
+        all_components = []
+        for name, code in indices.items():
+            try:
+                print(f"Fetching {name} components...")
+                df = ak.index_stock_cons(symbol=code)
+                df["index_name"] = name
+                all_components.append(df)
+                print(f"  Fetched {len(df)} stocks for {name}")
+            except Exception as e:
+                print(f"  Failed to fetch {name}: {e}")
+        if all_components:
+            return pd.concat(all_components, ignore_index=True)
+        return pd.DataFrame()
+    except ImportError:
+        print("  akshare not installed, skipping index fetch")
+        return pd.DataFrame()
+
+
+def fetch_all_stocks() -> pd.DataFrame:
+    """Fetch all stocks (A-share + HK)."""
+    stocks = []
+
+    a_stocks = fetch_a_stocks()
+    if not a_stocks.empty:
+        stocks.append(a_stocks)
+
+    hk_stocks = fetch_hk_stocks()
+    if not hk_stocks.empty:
+        stocks.append(hk_stocks)
+
+    if stocks:
+        return pd.concat(stocks, ignore_index=True)
+    return pd.DataFrame()
+
+
+# ==================== Update Functions ====================
+
+def update_single_stock(symbol: str, name: str, market: str = "A股") -> dict:
+    """Update classification for a single stock."""
+    print(f"\nProcessing: {symbol} {name}")
+
+    # Try network search first
+    info = search_company_info(symbol, name)
+
+    if info["business_desc"]:
+        print(f"  Business: {info['business_desc'][:60]}...")
+        print(f"  Classification: {info['industry_large']} / {info['industry_small']} / {info['hot_fields']}")
+    else:
+        # Fallback to name-based classification
+        print(f"  No network info, using name-based classification")
+        industry_large, industry_small, hot_fields = classify_by_name(name)
+        info["industry_large"] = industry_large
+        info["industry_small"] = industry_small
+        info["hot_fields"] = hot_fields
+
+    return info
+
+
+def merge_with_existing(new_stocks: pd.DataFrame, existing_path: str) -> list:
+    """Merge new stock list with existing classifications."""
+    existing = {}
+    if os.path.exists(existing_path):
+        existing_companies = load_companies_csv(existing_path)
+        for c in existing_companies:
+            existing[c["股票代码"]] = c
+
+    fieldnames = ["股票代码", "股票名称", "市场", "行业大类", "行业小类", "热点领域"]
+    merged = []
+
+    for _, row in new_stocks.iterrows():
+        code = str(row["股票代码"])
+        if code in existing:
+            merged.append(existing[code])
+        else:
+            merged.append({
+                "股票代码": code,
+                "股票名称": row["股票名称"],
+                "市场": row["市场"],
+                "行业大类": "",
+                "行业小类": "",
+                "热点领域": "",
+            })
+
+    return merged, fieldnames
+
+
+# ==================== Main CLI ====================
+
 def main():
-    parser = argparse.ArgumentParser(description="股票行业分类更新")
-    parser.add_argument(
-        "--stock", type=str, help="指定股票代码更新（如 688411）"
+    parser = argparse.ArgumentParser(
+        description="Stock industry classification updater"
     )
-    parser.add_argument(
-        "--missing", action="store_true", help="仅更新未分类的股票"
-    )
-    parser.add_argument(
-        "--all", action="store_true", help="更新所有股票（需要网络）"
-    )
-    parser.add_argument(
-        "--fetch", action="store_true", help="从 akshare 获取最新股票列表"
-    )
-    parser.add_argument(
-        "--output", type=str, default="output/companies.csv", help="输出文件路径"
-    )
+    parser.add_argument("--fetch", action="store_true", help="Fetch latest stock list from akshare")
+    parser.add_argument("--missing", action="store_true", help="Update stocks without classification")
+    parser.add_argument("--all", action="store_true", help="Update all stocks (requires network)")
+    parser.add_argument("--stock", type=str, help="Update single stock by code")
+    parser.add_argument("--output", default="output/companies.csv", help="Output CSV path")
+
     args = parser.parse_args()
 
-    # 确保输出目录存在
     os.makedirs("output", exist_ok=True)
 
     if args.fetch:
-        # 获取最新股票列表
-        df = get_stock_list_from_akshare()
-        if not df.empty:
-            # 读取现有数据
-            existing = {}
-            if os.path.exists(args.output):
-                existing_companies = load_companies_csv(args.output)
-                for c in existing_companies:
-                    existing[c["股票代码"]] = c
+        # Fetch stock list and merge with existing
+        new_stocks = fetch_all_stocks()
+        if new_stocks.empty:
+            print("No stocks fetched, check akshare installation")
+            return
 
-            # 合并
-            all_stocks = []
-            fieldnames = ["股票代码", "股票名称", "市场", "行业大类", "行业小类", "热点领域"]
-            for _, row in df.iterrows():
-                code = row["股票代码"]
-                if code in existing:
-                    all_stocks.append(existing[code])
-                else:
-                    all_stocks.append({
-                        "股票代码": code,
-                        "股票名称": row["股票名称"],
-                        "市场": row["市场"],
-                        "行业大类": "",
-                        "行业小类": "",
-                        "热点领域": "",
-                    })
-
-            save_companies_csv(args.output, all_stocks, fieldnames)
-            print(f"\n已更新股票列表，共 {len(all_stocks)} 只股票")
+        merged, fieldnames = merge_with_existing(new_stocks, args.output)
+        save_companies_csv(args.output, merged, fieldnames)
+        print(f"\nUpdated stock list: {len(merged)} stocks")
         return
 
     if args.stock:
-        # 更新单只股票
         info = update_single_stock(args.stock, args.stock)
-        print(f"\n更新结果: {info}")
+        print(f"\nResult: {info}")
         return
 
     if args.missing:
-        # 更新未分类的股票
         if not os.path.exists(args.output):
-            print(f"文件不存在: {args.output}")
+            print(f"File not found: {args.output}")
             return
 
         companies = load_companies_csv(args.output)
@@ -412,31 +438,29 @@ def main():
 
         updated = 0
         for i, company in enumerate(companies):
-            if not company.get("行业大类") or company["行业大类"] == "未知":
+            if not company.get("行业大类"):
                 code = company["股票代码"]
                 name = company["股票名称"]
-                print(f"\n[{i+1}/{len(companies)}] 处理未分类股票: {code} {name}")
+                print(f"\n[{i+1}/{len(companies)}] Unclassified: {code} {name}")
                 info = update_single_stock(code, name, company.get("市场", "A股"))
                 company["行业大类"] = info.get("industry_large", "")
                 company["行业小类"] = info.get("industry_small", "")
                 company["热点领域"] = info.get("hot_fields", "")
 
-                # 每处理10个保存一次
                 if (updated + 1) % 10 == 0:
                     save_companies_csv(args.output, companies, fieldnames)
-                    print(f"  已保存进度...")
+                    print("  Progress saved")
 
                 updated += 1
-                time.sleep(0.5)  # 避免请求过快
+                time.sleep(0.3)
 
         save_companies_csv(args.output, companies, fieldnames)
-        print(f"\n完成！共更新 {updated} 只股票")
+        print(f"\nDone! Updated {updated} stocks")
         return
 
     if args.all:
-        # 更新所有股票
         if not os.path.exists(args.output):
-            print(f"文件不存在: {args.output}")
+            print(f"File not found: {args.output}")
             return
 
         companies = load_companies_csv(args.output)
@@ -445,29 +469,27 @@ def main():
         for i, company in enumerate(companies):
             code = company["股票代码"]
             name = company["股票名称"]
-            print(f"\n[{i+1}/{len(companies)}] 处理: {code} {name}")
+            print(f"\n[{i+1}/{len(companies)}] {code} {name}")
             info = update_single_stock(code, name, company.get("市场", "A股"))
             company["行业大类"] = info.get("industry_large", "")
             company["行业小类"] = info.get("industry_small", "")
             company["热点领域"] = info.get("hot_fields", "")
 
-            # 每处理10个保存一次
             if (i + 1) % 10 == 0:
                 save_companies_csv(args.output, companies, fieldnames)
-                print(f"  已保存进度...")
+                print("  Progress saved")
 
-            time.sleep(0.5)
+            time.sleep(0.3)
 
         save_companies_csv(args.output, companies, fieldnames)
-        print(f"\n完成！共处理 {len(companies)} 只股票")
+        print(f"\nDone! Processed {len(companies)} stocks")
         return
 
-    # 默认：显示帮助
     parser.print_help()
-    print("\n示例:")
-    print("  python update_industry_class.py --fetch          # 获取最新股票列表")
-    print("  python update_industry_class.py --missing       # 更新未分类的股票")
-    print("  python update_industry_class.py --stock 688411  # 更新单只股票")
+    print("\nExamples:")
+    print("  python update_industry_class.py --fetch          # Fetch latest stock list")
+    print("  python update_industry_class.py --missing       # Update unclassified stocks")
+    print("  python update_industry_class.py --stock 688411  # Update single stock")
 
 
 if __name__ == "__main__":
